@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>BigQuery SQL 学習アプリ</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <h1>BQ SQL 学習</h1>
+    <button id="home-btn" class="sidebar-nav-btn">🏠 ホーム</button>
+    <div id="progress">読み込み中...</div>
+    <nav id="problem-list"></nav>
+    <div class="sidebar-footer">
+      <button id="show-cheatsheet" class="link-btn">📘 BQ/DuckDB 文法対応表</button>
+    </div>
+  </aside>
+  <main id="main">
+    <div id="loading">
+      <div class="spinner"></div>
+      <p>SQL エンジンを読み込み中...</p>
+    </div>
+    <div id="home-view" style="display:none">
+      <div class="home-header">
+        <h1>BigQuery SQL 学習</h1>
+        <p>JR西日本テーマの問題で BigQuery 流の SQL を体得する</p>
+      </div>
+      <div class="overall-progress">
+        <div class="progress-stat">
+          <div class="big-number" id="big-progress-num">0 / 0</div>
+          <div class="stat-label">問解答済</div>
+        </div>
+        <div style="flex:1">
+          <div class="progress-bar-large">
+            <div class="progress-fill" id="overall-progress-fill" style="width:0%"></div>
+          </div>
+          <div class="stat-label" id="overall-progress-pct" style="text-align:right;margin-top:6px">0%</div>
+        </div>
+      </div>
+      <h2 class="section-title">📚 章一覧 (クリックで開始)</h2>
+      <div class="chapter-grid" id="chapter-grid"></div>
+    </div>
+    <div id="problem-view" style="display:none">
+      <div id="problem-header">
+        <div class="tags">
+          <span class="category"></span>
+          <span class="difficulty"></span>
+        </div>
+        <h2 class="title"></h2>
+      </div>
+      <div id="description"></div>
+      <div id="schema"></div>
+      <div class="editor-label">あなたの SQL:</div>
+      <textarea id="editor" placeholder="ここに SQL を書いて Ctrl+Enter で実行" spellcheck="false"></textarea>
+      <div id="buttons">
+        <button id="run-btn">▶ 実行 (Ctrl+Enter)</button>
+        <button id="answer-btn" class="secondary">模範解答を見る</button>
+        <button id="reset-btn" class="secondary">リセット</button>
+      </div>
+      <div id="status"></div>
+      <div id="result"></div>
+      <div id="expected"></div>
+      <div id="hints"></div>
+      <div id="bq-notes"></div>
+    </div>
+    <div id="cheatsheet" style="display:none"></div>
+  </main>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/sql.js@1.13.0/dist/sql-wasm.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
