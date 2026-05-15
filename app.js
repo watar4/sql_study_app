@@ -35,6 +35,212 @@ function execQuery(sql) {
   return results[results.length - 1];
 }
 
+// ===== SQLite 固有構文の検出 (BigQuery では使えない) =====
+function stripStrings(sql) {
+  return sql.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
+}
+
+function detectSQLiteOnly(sql) {
+  const cleaned = stripStrings(sql);
+  const checks = [
+    { pattern: /\bstrftime\s*\(/i, name: 'strftime()',
+      bq: "BigQuery では <code>FORMAT_DATE('%Y-%m', col)</code>、<code>EXTRACT(MONTH FROM col)</code>、<code>DATE_TRUNC(col, MONTH)</code> など" },
+    { pattern: /\bGROUP_CONCAT\s*\(/i, name: 'GROUP_CONCAT()',
+      bq: "BigQuery では文字列連結なら <code>STRING_AGG(col, ',')</code>、配列なら <code>ARRAY_AGG(col)</code>" },
+    { pattern: /\bjulianday\s*\(/i, name: 'julianday()',
+      bq: "BigQuery では日数差は <code>DATE_DIFF(d1, d2, DAY)</code>" },
+    { pattern: /\bjson_each\s*\(/i, name: 'json_each()',
+      bq: "BigQuery では <code>UNNEST(array_col)</code> または <code>UNNEST(JSON_EXTRACT_ARRAY(json_text))</code>" },
+    { pattern: /\bCAST\s*\([^)]+?\bAS\s+TEXT\s*\)/i, name: 'CAST(... AS TEXT)',
+      bq: "BigQuery では <code>CAST(... AS STRING)</code>" },
+    { pattern: /\bCAST\s*\([^)]+?\bAS\s+REAL\s*\)/i, name: 'CAST(... AS REAL)',
+      bq: "BigQuery では <code>CAST(... AS FLOAT64)</code>" },
+    { pattern: /\bdate\s*\(\s*[^,)]+\s*,\s*'[+-]?\d+\s+(day|month|year)/i, name: "date(col, '+N day')",
+      bq: "BigQuery では <code>DATE_ADD(col, INTERVAL N DAY)</code>" },
+  ];
+  for (const c of checks) {
+    if (c.pattern.test(cleaned)) return c;
+  }
+  return null;
+}
+
+// ===== QUALIFY 翻訳 (BQ → SQLite サブクエリ展開) =====
+function splitTopLevel(s, delim) {
+  const result = [];
+  let depth = 0;
+  let cur = '';
+  let inQ = null;
+  for (const ch of s) {
+    if (inQ) { cur += ch; if (ch === inQ) inQ = null; continue; }
+    if (ch === "'" || ch === '"') { inQ = ch; cur += ch; continue; }
+    if (ch === '(') depth++;
+    if (ch === ')') depth--;
+    if (ch === delim && depth === 0) { result.push(cur.trim()); cur = ''; }
+    else cur += ch;
+  }
+  if (cur.trim()) result.push(cur.trim());
+  return result;
+}
+
+function findOuterKeyword(s, keyword) {
+  const re = new RegExp(`\\b${keyword.replace(/\s+/, '\\s+')}\\b`, 'i');
+  let depth = 0;
+  let inQ = null;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inQ) { if (ch === inQ) inQ = null; continue; }
+    if (ch === "'" || ch === '"') { inQ = ch; continue; }
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    else if (depth === 0 && re.test(s.slice(i, i + keyword.length + 4))) {
+      const slice = s.slice(i);
+      const m = slice.match(re);
+      if (m && m.index === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function translateUnnest(sql) {
+  // Pattern: UNNEST(JSON_EXTRACT_ARRAY(<col>)) AS <alias>
+  const re = /UNNEST\s*\(\s*JSON_EXTRACT_ARRAY\s*\(([^()]+)\)\s*\)\s+AS\s+(\w+)/i;
+  const m = sql.match(re);
+  if (!m) return sql;
+  const col = m[1].trim();
+  const alias = m[2];
+  const aliasJe = `${alias}__je`;
+  let r = sql.replace(re, `json_each(${col}) AS ${aliasJe}`);
+  // UNNEST 句を書き換えた後は元の "AS <alias>" は消えているので、
+  // 残る <alias> 単独参照を <alias>__je.value に置換
+  const refRe = new RegExp(`(?<!\\.)\\b${alias}\\b(?!__je)`, 'g');
+  r = r.replace(refRe, `${aliasJe}.value`);
+  return r;
+}
+
+function translateQualify(sql) {
+  const qualifyIdx = findOuterKeyword(sql, 'QUALIFY');
+  if (qualifyIdx < 0) return sql;
+
+  const beforeQualify = sql.slice(0, qualifyIdx).trim();
+  let afterQualify = sql.slice(qualifyIdx).replace(/^QUALIFY\s+/i, '');
+
+  // 外側 ORDER BY を切り出し
+  const orderByIdx = findOuterKeyword(afterQualify, 'ORDER BY');
+  let orderBy = '';
+  let qualifyExpr = afterQualify;
+  if (orderByIdx >= 0) {
+    orderBy = ' ' + afterQualify.slice(orderByIdx).trim();
+    qualifyExpr = afterQualify.slice(0, orderByIdx).trim();
+  }
+
+  const opMatch = qualifyExpr.match(/^([\s\S]+?)\s*(<=|>=|<>|!=|=|<|>)\s*([\s\S]+)$/);
+  if (!opMatch) return sql;
+  const windowExpr = opMatch[1].trim();
+  const op = opMatch[2];
+  const val = opMatch[3].trim();
+
+  const fromIdx = findOuterKeyword(beforeQualify, 'FROM');
+  if (fromIdx < 0) return sql;
+  const selectPart = beforeQualify.slice(0, fromIdx).trim();
+  const restPart = beforeQualify.slice(fromIdx).trim();
+  if (!/^SELECT\b/i.test(selectPart)) return sql;
+
+  const selectColsRaw = selectPart.replace(/^SELECT\s+/i, '').trim();
+  const cols = splitTopLevel(selectColsRaw, ',');
+  const outputNames = cols.map(c => {
+    const asMatch = c.match(/\s+AS\s+`?(\w+)`?\s*$/i);
+    if (asMatch) return asMatch[1];
+    const tail = c.trim().match(/(\w+)$/);
+    return tail ? tail[1] : c.trim();
+  });
+
+  return `SELECT ${outputNames.join(', ')} FROM (SELECT ${selectColsRaw}, ${windowExpr} AS _qf_ ${restPart}) WHERE _qf_ ${op} ${val}${orderBy}`;
+}
+
+// ===== BigQuery → SQLite 翻訳レイヤー =====
+// よくある BQ 固有関数を SQLite 等価に書き換える。
+// マッチしないパターンは素通り (SQLite 構文ならそのまま動く)
+function translateBQtoSQLite(sql) {
+  let r = sql;
+
+  // CURRENT_TIMESTAMP() → CURRENT_TIMESTAMP (SQLite はかっこ不可)
+  r = r.replace(/\bCURRENT_TIMESTAMP\s*\(\s*\)/gi, 'CURRENT_TIMESTAMP');
+  r = r.replace(/\bCURRENT_DATE\s*\(\s*\)/gi, 'CURRENT_DATE');
+
+  // SAFE_CAST → CAST、SAFE.FUNC( → FUNC(
+  r = r.replace(/\bSAFE_CAST\b/gi, 'CAST');
+  r = r.replace(/\bSAFE\.([A-Z_]+)\s*\(/gi, '$1(');
+
+  // 型名: INT64 / STRING / FLOAT64 / BOOL → SQLite 型
+  r = r.replace(/\bAS\s+INT64\b/gi, 'AS INTEGER');
+  r = r.replace(/\bAS\s+STRING\b/gi, 'AS TEXT');
+  r = r.replace(/\bAS\s+FLOAT64\b/gi, 'AS REAL');
+  r = r.replace(/\bAS\s+BOOL\b/gi, 'AS INTEGER');
+  r = r.replace(/\bAS\s+NUMERIC\b/gi, 'AS REAL');
+
+  // FORMAT_DATE('%Y-%m', col) → strftime('%Y-%m', col)
+  r = r.replace(/\bFORMAT_(?:DATE|TIMESTAMP|DATETIME)\s*\(\s*('[^']+')\s*,\s*([^)]+)\)/gi, 'strftime($1, $2)');
+
+  // DATE_TRUNC(col, MONTH/YEAR/DAY/WEEK)
+  r = r.replace(/\bDATE_TRUNC\s*\(([^,]+),\s*MONTH\s*\)/gi, "strftime('%Y-%m-01', $1)");
+  r = r.replace(/\bDATE_TRUNC\s*\(([^,]+),\s*YEAR\s*\)/gi, "strftime('%Y-01-01', $1)");
+  r = r.replace(/\bDATE_TRUNC\s*\(([^,]+),\s*DAY\s*\)/gi, 'date($1)');
+  r = r.replace(/\bDATE_TRUNC\s*\(([^,]+),\s*WEEK\s*\)/gi, "date($1, 'weekday 0', '-6 days')");
+
+  // EXTRACT(MONTH/YEAR/DAY FROM col) は SQLite でも EXTRACT 動かない → strftime に
+  r = r.replace(/\bEXTRACT\s*\(\s*YEAR\s+FROM\s+([^)]+)\)/gi, "CAST(strftime('%Y', $1) AS INTEGER)");
+  r = r.replace(/\bEXTRACT\s*\(\s*MONTH\s+FROM\s+([^)]+)\)/gi, "CAST(strftime('%m', $1) AS INTEGER)");
+  r = r.replace(/\bEXTRACT\s*\(\s*DAY\s+FROM\s+([^)]+)\)/gi, "CAST(strftime('%d', $1) AS INTEGER)");
+  // EXTRACT(DAYOFWEEK FROM col): BQ は日=1〜土=7、SQLite strftime('%w') は日=0〜土=6
+  r = r.replace(/\bEXTRACT\s*\(\s*DAYOFWEEK\s+FROM\s+([^)]+)\)/gi, "(CAST(strftime('%w', $1) AS INTEGER) + 1)");
+  // ISOWEEK や ISO 関連はスキップ
+
+  // DATE_DIFF(d1, d2, DAY) → 日数差
+  r = r.replace(/\bDATE_DIFF\s*\(([^,]+),([^,]+),\s*DAY\s*\)/gi, 'CAST((julianday($1) - julianday($2)) AS INTEGER)');
+
+  // DATE_ADD / DATE_SUB
+  r = r.replace(/\bDATE_ADD\s*\(([^,]+),\s*INTERVAL\s+(\d+)\s+DAY\s*\)/gi, "date($1, '+$2 day')");
+  r = r.replace(/\bDATE_SUB\s*\(([^,]+),\s*INTERVAL\s+(\d+)\s+DAY\s*\)/gi, "date($1, '-$2 day')");
+  r = r.replace(/\bDATE_ADD\s*\(([^,]+),\s*INTERVAL\s+(\d+)\s+MONTH\s*\)/gi, "date($1, '+$2 month')");
+  r = r.replace(/\bDATE_SUB\s*\(([^,]+),\s*INTERVAL\s+(\d+)\s+MONTH\s*\)/gi, "date($1, '-$2 month')");
+
+  // REGEXP_CONTAINS(col, 'pat') → col LIKE '%pat%' (リテラル文字列に限る簡易対応)
+  r = r.replace(/\bREGEXP_CONTAINS\s*\(\s*([^,]+),\s*'([^']+)'\s*\)/gi, "$1 LIKE '%$2%'");
+  r = r.replace(/\bCONTAINS_SUBSTR\s*\(\s*([^,]+),\s*'([^']+)'\s*\)/gi, "$1 LIKE '%$2%'");
+
+  // ARRAY_AGG(col ORDER BY x) → GROUP_CONCAT(col, ',' ORDER BY x)
+  r = r.replace(/\bARRAY_AGG\s*\(\s*(\w+)\s+ORDER\s+BY\s+([^)]+)\)/gi, "GROUP_CONCAT($1, ',' ORDER BY $2)");
+  r = r.replace(/\bARRAY_AGG\s*\(\s*(DISTINCT\s+\w+)\s*\)/gi, "GROUP_CONCAT($1, ',')");
+  r = r.replace(/\bARRAY_AGG\s*\(\s*(\w+)\s*\)/gi, "GROUP_CONCAT($1, ',')");
+
+  // STRING_AGG(col, sep) → GROUP_CONCAT(col, sep)
+  r = r.replace(/\bSTRING_AGG\s*\(/gi, 'GROUP_CONCAT(');
+
+  // COUNTIF(cond) → SUM(CASE WHEN cond THEN 1 ELSE 0 END)
+  r = r.replace(/\bCOUNTIF\s*\(([^)]+)\)/gi, 'SUM(CASE WHEN $1 THEN 1 ELSE 0 END)');
+
+  // IF(cond, a, b) → CASE WHEN cond THEN a ELSE b END (簡易: ネストなし、カンマで3要素)
+  // 注意: 三引数の関数すべてに反応してしまうリスクあり。"IF(" だけにマッチさせる
+  r = r.replace(/\bIF\s*\(([^,()]+|\([^)]*\))\s*,\s*([^,()]+|\([^)]*\))\s*,\s*([^,()]+|\([^)]*\))\)/gi,
+                '(CASE WHEN $1 THEN $2 ELSE $3 END)');
+
+  // EXCEPT DISTINCT / UNION DISTINCT / INTERSECT DISTINCT → SQLite はキーワード無し
+  r = r.replace(/\bEXCEPT\s+DISTINCT\b/gi, 'EXCEPT');
+  r = r.replace(/\bUNION\s+DISTINCT\b/gi, 'UNION');
+  r = r.replace(/\bINTERSECT\s+DISTINCT\b/gi, 'INTERSECT');
+
+  // UNNEST(JSON_EXTRACT_ARRAY(col)) AS alias → json_each(col) AS alias__je
+  // SELECT/ORDER BY 中の bare alias を alias__je.value に書き換え
+  r = translateUnnest(r);
+
+  // QUALIFY → サブクエリ展開
+  r = translateQualify(r);
+
+  // IFNULL は SQLite でも動く、変換不要
+
+  return r;
+}
+
 function getTableTypes(tableName) {
   try {
     const info = execQuery(`PRAGMA table_info("${tableName}")`);
@@ -256,16 +462,38 @@ function runQuery() {
   }
   localStorage.setItem(editorKey(currentProblemId), sql);
 
+  // SQLite 固有構文の検出 (bqOnly 問題はスキップ)
+  if (!p.bqOnly) {
+    const sqliteOnly = detectSQLiteOnly(sql);
+    if (sqliteOnly) {
+      setStatus(
+        `❌ SQLite では正しいが BigQuery では使えない構文です\n\n` +
+        `検出: ${sqliteOnly.name}\n` +
+        `→ ${sqliteOnly.bq.replace(/<\/?code>/g, '`')}`,
+        'error'
+      );
+      showTranslationNotice(null);
+      setResults(null, null);
+      return;
+    }
+  }
+
+  // BigQuery 構文を SQLite 等価に翻訳
+  const translatedSql = translateBQtoSQLite(sql);
+  const wasTranslated = translatedSql.replace(/\s+/g, ' ').trim() !== sql.replace(/\s+/g, ' ').trim();
+  showTranslationNotice(wasTranslated ? translatedSql : null);
+
   setStatus('実行中...', null);
 
   try {
     resetDB();
     execSetup(p.setup);
-    const userResult = execQuery(sql);
+    const userResult = execQuery(translatedSql);
 
     resetDB();
     execSetup(p.setup);
-    const expectedResult = execQuery(p.expected);
+    const expectedSql = p.execExpected || translateBQtoSQLite(p.expected);
+    const expectedResult = execQuery(expectedSql);
 
     setResults(userResult, expectedResult);
 
@@ -276,9 +504,30 @@ function runQuery() {
       setStatus('× 結果が期待と一致しません。下の「期待される結果」と見比べてください。', 'mismatch');
     }
   } catch (e) {
-    setStatus(`エラー: ${e.message}`, 'error');
+    let msg = `エラー: ${e.message}`;
+    if (/QUALIFY/i.test(sql)) {
+      msg += `\n\n💡 ヒント: QUALIFY は SQLite では未対応です。サブクエリで書き換えてみてください。`;
+    } else if (/\bUNNEST\b/i.test(sql)) {
+      msg += `\n\n💡 ヒント: UNNEST は SQLite では未対応です。配列の代わりに json_each(json_列) を使ってください。`;
+    }
+    setStatus(msg, 'error');
     setResults(null, null);
   }
+}
+
+function showTranslationNotice(translatedSql) {
+  const div = document.getElementById('translation-notice');
+  if (!div) return;
+  if (!translatedSql) {
+    div.style.display = 'none';
+    div.innerHTML = '';
+    return;
+  }
+  div.style.display = 'block';
+  div.innerHTML = `
+    <div class="notice-header">📝 BigQuery 構文を SQLite 構文に自動変換しました (実際に実行された SQL ↓)</div>
+    <pre>${escapeHtml(translatedSql)}</pre>
+  `;
 }
 
 function setStatus(msg, kind) {

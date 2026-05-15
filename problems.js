@@ -331,10 +331,10 @@ export const problems = [
     description: '<code>products</code> からカテゴリごとの <b>平均価格</b> を出してください。列名は <code>category, avg_price</code>、平均価格は<b>整数(円)</b>に丸めてください。',
     tables: ['products'],
     setup: PRODUCTS,
-    expected: 'SELECT category, CAST(ROUND(AVG(price)) AS INTEGER) AS avg_price FROM products GROUP BY category',
+    expected: 'SELECT category, CAST(ROUND(AVG(price)) AS INT64) AS avg_price FROM products GROUP BY category',
     ordered: false,
-    hints: ['<code>AVG()</code> は浮動小数', '<code>ROUND()</code> + <code>CAST(... AS INTEGER)</code>'],
-    bqNotes: 'BigQuery: <code>CAST(x AS INT64)</code> または <code>SAFE_CAST(x AS INT64)</code>。'
+    hints: ['<code>AVG()</code> は浮動小数', '<code>ROUND()</code> + <code>CAST(... AS INT64)</code>'],
+    bqNotes: '<code>SAFE_CAST(x AS INT64)</code> は変換失敗で NULL を返すのでクレンジング向き。'
   },
 
   // ====================================================
@@ -390,7 +390,7 @@ ORDER BY p.passenger_id`,
     tables: ['rides'],
     setup: RIDES,
     expected: `WITH monthly AS (
-  SELECT strftime('%Y-%m', ride_date) AS month, fare
+  SELECT FORMAT_DATE('%Y-%m', ride_date) AS month, fare
   FROM rides
 )
 SELECT month, COUNT(*) AS ride_count, SUM(fare) AS total_fare
@@ -398,8 +398,8 @@ FROM monthly
 GROUP BY month
 ORDER BY month`,
     ordered: true,
-    hints: ['<code>WITH 名前 AS (SELECT ...)</code>', 'SQLite: <code>strftime(\'%Y-%m\', date)</code>'],
-    bqNotes: 'BigQuery: <code>FORMAT_DATE(\'%Y-%m\', d)</code> または <code>DATE_TRUNC(d, MONTH)</code>。'
+    hints: ['<code>WITH 名前 AS (SELECT ...)</code>', 'BigQuery: <code>FORMAT_DATE(\'%Y-%m\', date)</code>'],
+    bqNotes: 'BigQuery で月初に丸めるなら <code>DATE_TRUNC(d, MONTH)</code>。文字列にしたいなら <code>FORMAT_DATE(\'%Y-%m\', d)</code>。'
   },
 
   // ====================================================
@@ -531,12 +531,12 @@ ORDER BY station_id, type`,
     tables: ['stations', 'rides'],
     setup: STATIONS + RIDES,
     expected: `SELECT station_id FROM stations
-EXCEPT
+EXCEPT DISTINCT
 SELECT from_station_id FROM rides
 ORDER BY station_id`,
     ordered: true,
-    hints: ['<code>SELECT ... EXCEPT SELECT ...</code> で差分', '上下のSELECTは同じ列数・順序が必要'],
-    bqNotes: 'BigQuery では <code>EXCEPT DISTINCT</code> と明示が必要 (重複保持版の <code>EXCEPT ALL</code> もあり)。SQLite/Postgres の <code>EXCEPT</code> は DISTINCT が暗黙。'
+    hints: ['<code>SELECT ... EXCEPT DISTINCT SELECT ...</code> で差分', '上下のSELECTは同じ列数・順序が必要', 'BigQuery は <code>DISTINCT</code> の明示が必須'],
+    bqNotes: 'BigQuery では <code>EXCEPT DISTINCT</code> または <code>EXCEPT ALL</code> と明示必須。素の <code>EXCEPT</code> はエラーになります(他の DB と違うところ)。'
   },
 
   // ====================================================
@@ -590,20 +590,13 @@ ORDER BY from_station_id, ride_date, ride_id`,
     description: '<code>passengers</code> から <b>都道府県ごとに最年長の人</b> を1人ずつ抽出してください。列は <code>prefecture, name, age</code>、<code>prefecture</code> 昇順。',
     tables: ['passengers'],
     setup: PASSENGERS,
-    expected: `SELECT prefecture, name, age FROM (
-  SELECT prefecture, name, age,
-    ROW_NUMBER() OVER (PARTITION BY prefecture ORDER BY age DESC) AS rn
-  FROM passengers
-) WHERE rn = 1
-ORDER BY prefecture`,
-    ordered: true,
-    hints: ['ウィンドウ関数 + サブクエリで <code>rn = 1</code> をフィルタ', 'BigQuery なら <code>QUALIFY</code> 一発'],
-    bqNotes: `BigQuery では <code>QUALIFY</code> を使ってよりシンプルに書けます:
-<pre style="background:#11111b;padding:8px;border-radius:4px;margin-top:4px"><code>SELECT prefecture, name, age
+    expected: `SELECT prefecture, name, age
 FROM passengers
 QUALIFY ROW_NUMBER() OVER (PARTITION BY prefecture ORDER BY age DESC) = 1
-ORDER BY prefecture</code></pre>
-<code>QUALIFY</code> はウィンドウ関数結果を直接 WHERE のように使える節。BQ/DuckDB/Snowflake 専用。`
+ORDER BY prefecture`,
+    ordered: true,
+    hints: ['<code>QUALIFY</code> でウィンドウ関数の結果を直接フィルタ', 'BQ/DuckDB/Snowflake 専用の構文'],
+    bqNotes: '<code>QUALIFY</code> は <code>WHERE</code> 句のウィンドウ関数版。同じことをサブクエリで書くと冗長になります。BigQuery では超頻出。'
   },
 
   // ====================================================
@@ -648,10 +641,10 @@ ORDER BY passenger_id, ride_date, ride_id`,
     tables: ['rides', 'passengers'],
     setup: PASSENGERS + RIDES,
     expected: `SELECT p.prefecture,
-  SUM(CASE WHEN strftime('%Y-%m', r.ride_date) = '2025-01' THEN 1 ELSE 0 END) AS m_2025_01,
-  SUM(CASE WHEN strftime('%Y-%m', r.ride_date) = '2025-02' THEN 1 ELSE 0 END) AS m_2025_02,
-  SUM(CASE WHEN strftime('%Y-%m', r.ride_date) = '2025-03' THEN 1 ELSE 0 END) AS m_2025_03,
-  SUM(CASE WHEN strftime('%Y-%m', r.ride_date) = '2025-04' THEN 1 ELSE 0 END) AS m_2025_04
+  SUM(CASE WHEN FORMAT_DATE('%Y-%m', r.ride_date) = '2025-01' THEN 1 ELSE 0 END) AS m_2025_01,
+  SUM(CASE WHEN FORMAT_DATE('%Y-%m', r.ride_date) = '2025-02' THEN 1 ELSE 0 END) AS m_2025_02,
+  SUM(CASE WHEN FORMAT_DATE('%Y-%m', r.ride_date) = '2025-03' THEN 1 ELSE 0 END) AS m_2025_03,
+  SUM(CASE WHEN FORMAT_DATE('%Y-%m', r.ride_date) = '2025-04' THEN 1 ELSE 0 END) AS m_2025_04
 FROM rides r
 JOIN passengers p ON r.passenger_id = p.passenger_id
 GROUP BY p.prefecture
@@ -698,13 +691,13 @@ ORDER BY region, quarter</code></pre>`
     description: '<code>rides</code> から <b>月別の乗車回数</b> を集計してください。列は <code>month (YYYY-MM 形式)</code>, <code>cnt</code>、<code>month</code> 昇順。',
     tables: ['rides'],
     setup: RIDES,
-    expected: `SELECT strftime('%Y-%m', ride_date) AS month, COUNT(*) AS cnt
+    expected: `SELECT FORMAT_DATE('%Y-%m', ride_date) AS month, COUNT(*) AS cnt
 FROM rides
 GROUP BY month
 ORDER BY month`,
     ordered: true,
-    hints: ['<code>strftime(\'%Y-%m\', ride_date)</code>'],
-    bqNotes: 'BigQuery: <code>FORMAT_DATE(\'%Y-%m\', ride_date)</code> または <code>DATE_TRUNC(ride_date, MONTH)</code>。'
+    hints: ['<code>FORMAT_DATE(\'%Y-%m\', ride_date)</code> で YYYY-MM 文字列化', '<code>GROUP BY</code> で alias 直接使用可'],
+    bqNotes: 'BigQuery では <code>FORMAT_DATE(\'%Y-%m\', d)</code> が定番。月初の DATE 値が欲しければ <code>DATE_TRUNC(d, MONTH)</code>。'
   },
   {
     id: 'd02', category: '日付・文字列', difficulty: '★★',
@@ -727,18 +720,13 @@ ORDER BY month`,
     description: '乗客ごとに、<b>利用した出発駅IDをカンマ区切りで連結</b>してください。列は <code>passenger_id, station_ids</code>、<code>passenger_id</code> 昇順。<code>ride_id</code> 順で連結。',
     tables: ['rides'],
     setup: RIDES,
-    expected: `SELECT passenger_id, GROUP_CONCAT(from_station_id, ',' ORDER BY ride_id) AS station_ids
+    expected: `SELECT passenger_id, STRING_AGG(CAST(from_station_id AS STRING), ',' ORDER BY ride_id) AS station_ids
 FROM rides
 GROUP BY passenger_id
 ORDER BY passenger_id`,
     ordered: true,
-    hints: ['SQLite: <code>GROUP_CONCAT(列, 区切り文字 ORDER BY ...)</code>'],
-    bqNotes: `BigQuery では <code>ARRAY_AGG</code> で<b>配列</b>そのものを返すのが標準:
-<pre style="background:#11111b;padding:8px;border-radius:4px;margin-top:4px"><code>SELECT passenger_id, ARRAY_AGG(from_station_id ORDER BY ride_id) AS station_ids
-FROM rides
-GROUP BY passenger_id
-ORDER BY passenger_id</code></pre>
-カンマ連結なら <code>STRING_AGG(col, ',')</code>。`
+    hints: ['<code>STRING_AGG(列, \',\' ORDER BY ...)</code> でカンマ区切り連結', '数値型は <code>CAST(... AS STRING)</code> で文字列化が必要'],
+    bqNotes: '配列(ARRAY)そのものを返すなら <code>ARRAY_AGG(from_station_id ORDER BY ride_id)</code>。重複除去は <code>ARRAY_AGG(DISTINCT col)</code>。NULL を除くなら <code>ARRAY_AGG(col IGNORE NULLS)</code>。'
   },
   {
     id: 's02', category: '配列・UNNEST', difficulty: '★★★',
@@ -746,16 +734,12 @@ ORDER BY passenger_id</code></pre>
     description: '<code>user_tags</code> テーブルの <code>tags</code> 列は JSON 配列の文字列です。<b>1行1タグの形に展開</b>してください。列は <code>user_id, tag</code>、<code>user_id, tag</code> 昇順。',
     tables: ['user_tags'],
     setup: USER_TAGS,
-    expected: `SELECT u.user_id, j.value AS tag
-FROM user_tags u, json_each(u.tags) j
-ORDER BY u.user_id, j.value`,
+    expected: `SELECT user_id, tag
+FROM user_tags, UNNEST(JSON_EXTRACT_ARRAY(tags)) AS tag
+ORDER BY user_id, tag`,
     ordered: true,
-    hints: ['SQLite: <code>json_each(json列)</code> で配列を行に展開'],
-    bqNotes: `BigQuery の標準は <b>ARRAY 型 + UNNEST</b>:
-<pre style="background:#11111b;padding:8px;border-radius:4px;margin-top:4px"><code>SELECT user_id, tag
-FROM user_tags, UNNEST(tags) AS tag
-ORDER BY user_id, tag</code></pre>
-カンマ+UNNEST は<b>暗黙の CROSS JOIN</b>。空配列の行も残したい場合は <code>LEFT JOIN UNNEST(tags) AS tag</code>。`
+    hints: ['<code>UNNEST(配列)</code> で配列を行に展開', '<code>JSON_EXTRACT_ARRAY(text)</code> で JSON 文字列 → ARRAY', 'カンマ + UNNEST は<b>暗黙の CROSS JOIN</b>'],
+    bqNotes: 'もし <code>tags</code> 列が最初から <code>ARRAY&lt;STRING&gt;</code> 型なら <code>UNNEST(tags)</code> だけで済みます。空配列の行も残したい場合は <code>LEFT JOIN UNNEST(tags) AS tag</code>。'
   },
 
   // ====================================================
@@ -768,7 +752,7 @@ ORDER BY user_id, tag</code></pre>
     tables: ['sales', 'products'],
     setup: PRODUCTS + SALES,
     expected: `WITH monthly AS (
-  SELECT strftime('%Y-%m', s.sold_at) AS month,
+  SELECT FORMAT_DATE('%Y-%m', s.sold_at) AS month,
          SUM(s.quantity * p.price) AS revenue
   FROM sales s
   JOIN products p ON s.product_id = p.product_id
@@ -790,11 +774,11 @@ ORDER BY month`,
     tables: ['passengers', 'rides'],
     setup: PASSENGERS + RIDES,
     expected: `WITH cohort AS (
-  SELECT passenger_id, strftime('%Y-%m', registered_at) AS cohort_month
+  SELECT passenger_id, FORMAT_DATE('%Y-%m', registered_at) AS cohort_month
   FROM passengers
 ),
 activity AS (
-  SELECT DISTINCT passenger_id, strftime('%Y-%m', ride_date) AS active_month
+  SELECT DISTINCT passenger_id, FORMAT_DATE('%Y-%m', ride_date) AS active_month
   FROM rides
 )
 SELECT c.cohort_month, a.active_month, COUNT(DISTINCT a.passenger_id) AS active_users
