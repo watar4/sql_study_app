@@ -189,12 +189,16 @@ function loadProblem(id) {
   setResults(null, null);
 
   const hintsDiv = document.getElementById('hints');
+  const hintBtn = document.getElementById('hint-btn');
   if (p.hints && p.hints.length) {
     hintsDiv.innerHTML = '<div class="note-header">💡 ヒント</div>' +
       p.hints.map(h => `<div>・ ${h}</div>`).join('');
-    hintsDiv.classList.add('visible');
+    hintsDiv.classList.remove('visible');
+    hintBtn.style.display = '';
+    hintBtn.textContent = '💡 ヒントを見る';
   } else {
     hintsDiv.classList.remove('visible');
+    hintBtn.style.display = 'none';
   }
 
   const bqDiv = document.getElementById('bq-notes');
@@ -343,6 +347,18 @@ function resetEditor() {
   if (currentProblemId) localStorage.removeItem(editorKey(currentProblemId));
 }
 
+function toggleHints() {
+  const hintsDiv = document.getElementById('hints');
+  const hintBtn = document.getElementById('hint-btn');
+  if (hintsDiv.classList.contains('visible')) {
+    hintsDiv.classList.remove('visible');
+    hintBtn.textContent = '💡 ヒントを見る';
+  } else {
+    hintsDiv.classList.add('visible');
+    hintBtn.textContent = '💡 ヒントを隠す';
+  }
+}
+
 function showCheatsheet() {
   document.getElementById('problem-view').style.display = 'none';
   document.getElementById('home-view').style.display = 'none';
@@ -367,6 +383,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('reset-btn').onclick = resetEditor;
     document.getElementById('show-cheatsheet').onclick = showCheatsheet;
     document.getElementById('home-btn').onclick = showHome;
+    document.getElementById('hint-btn').onclick = toggleHints;
 
     const editor = document.getElementById('editor');
     editor.addEventListener('keydown', (e) => {
