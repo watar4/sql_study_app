@@ -235,7 +235,16 @@ export const chapters = [
   {
     name: '実践応用',
     description: '複数の概念を組み合わせる総合演習。業務でよく出るパターン。',
-    skills: ['前月比成長率 (LAG)', 'コホート分析', 'CTE の段階的積み上げ']
+    skills: [
+      '前月比成長率 (LAG)',
+      'コホート分析',
+      'DAU/MAU 集計 (DISTINCT)',
+      'グループ内 TOP N (QUALIFY)',
+      '構成比 (OVER ())',
+      '休眠ユーザー抽出 (DATE_DIFF)',
+      '累計達成日 (Window + MIN)',
+      '複合キー RANK / 多次元集計'
+    ]
   }
 ];
 
@@ -789,5 +798,158 @@ ORDER BY c.cohort_month, a.active_month`,
     ordered: true,
     hints: ['登録月で乗客を分類 (CTE1)', '乗車記録から月別ユニーク利用者 (CTE2)', '両者を結合してコホート×月で集計'],
     bqNotes: 'コホート分析はマーケ・継続率分析の定番。BigQuery では <code>DATE_DIFF(active_month, cohort_month, MONTH)</code> で「登録から何ヶ月後か」を出してピボットすると "横軸=経過月" の表になります。'
+  },
+  {
+    id: 'ap03', category: '実践応用', difficulty: '★★',
+    title: '月別ユニーク利用者数 (DAU/MAU 風)',
+    description: '<code>rides</code> から <b>月別のユニーク利用者数 (重複なし)</b> を集計してください。DAU/MAU/WAU 系の基礎指標。<br>列は <code>month, unique_users</code>、<code>month</code> 昇順。',
+    tables: ['rides'],
+    setup: RIDES,
+    expected: `SELECT FORMAT_DATE('%Y-%m', ride_date) AS month,
+       COUNT(DISTINCT passenger_id) AS unique_users
+FROM rides
+GROUP BY month
+ORDER BY month`,
+    ordered: true,
+    hints: ['<code>COUNT(DISTINCT passenger_id)</code> で重複なし数', '月別集計と組み合わせる'],
+    bqNotes: '大規模データで概算でよければ <code>APPROX_COUNT_DISTINCT(passenger_id)</code> を使うと高速・低コスト。DAU を毎日のサイズ集計で使うときの定番テクニック。'
+  },
+  {
+    id: 'ap04', category: '実践応用', difficulty: '★★★',
+    title: '都道府県別 TOP3 利用駅',
+    description: '<code>rides</code> と <code>stations</code> を結合し、<b>都道府県ごとに出発駅としての利用回数 TOP3</b> を抽出してください。同点は駅名昇順で。<br>列は <code>prefecture, name, ride_count</code>、<code>prefecture, ride_count DESC, name</code> 昇順。',
+    tables: ['rides', 'stations'],
+    setup: STATIONS + RIDES,
+    expected: `WITH station_use AS (
+  SELECT s.prefecture, s.name, COUNT(*) AS ride_count
+  FROM rides r
+  JOIN stations s ON r.from_station_id = s.station_id
+  GROUP BY s.prefecture, s.name, s.station_id
+)
+SELECT prefecture, name, ride_count
+FROM station_use
+QUALIFY ROW_NUMBER() OVER (PARTITION BY prefecture ORDER BY ride_count DESC, name) <= 3
+ORDER BY prefecture, ride_count DESC, name`,
+    ordered: true,
+    hints: ['CTE で駅別利用回数を集計', '<code>QUALIFY ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ... DESC) &lt;= 3</code>', 'タイブレーカに name を入れて結果を安定化'],
+    bqNotes: '「グループ内 TOP N」は実務で超頻出。<code>QUALIFY</code> 一発で書けるのが BigQuery 最強の武器の一つ。同じことをサブクエリ + WHERE で書くと冗長になります。'
+  },
+  {
+    id: 'ap05', category: '実践応用', difficulty: '★★★',
+    title: '都道府県別の売上構成比',
+    description: '都道府県ごとの乗車運賃合計と、<b>全体に対する構成比 (%)</b> を計算してください。<br>列は <code>prefecture, total_fare, pct</code>、<code>total_fare</code> 降順。<code>pct</code> は小数1桁。',
+    tables: ['rides', 'passengers'],
+    setup: PASSENGERS + RIDES,
+    expected: `WITH pref_fares AS (
+  SELECT p.prefecture, SUM(r.fare) AS total_fare
+  FROM rides r
+  JOIN passengers p ON r.passenger_id = p.passenger_id
+  GROUP BY p.prefecture
+)
+SELECT prefecture, total_fare,
+  ROUND(total_fare * 100.0 / SUM(total_fare) OVER (), 1) AS pct
+FROM pref_fares
+ORDER BY total_fare DESC`,
+    ordered: true,
+    hints: ['<code>SUM(...) OVER ()</code> で<b>パーティションなし</b>=全体合計', '構成比 = 値 ÷ 全体 × 100'],
+    bqNotes: '<code>OVER ()</code> (PARTITION BY 無し) は<b>全行を1つのウィンドウとして扱う</b>。グループ内構成比なら <code>OVER (PARTITION BY group_col)</code>。CTE を使わず1クエリで完結する書き方もできます。'
+  },
+  {
+    id: 'ap06', category: '実践応用', difficulty: '★★★',
+    title: '休眠乗客の抽出 (30日以上未利用)',
+    description: '<b>2025-04-15 時点で、最終乗車から30日以上経過した乗客</b> を抽出してください。一度も乗車していない人も含む。<br>列は <code>passenger_id, name, last_ride, days_inactive</code>、<code>passenger_id</code> 昇順。',
+    tables: ['passengers', 'rides'],
+    setup: PASSENGERS + RIDES,
+    expected: `SELECT p.passenger_id, p.name, MAX(r.ride_date) AS last_ride,
+  DATE_DIFF(DATE '2025-04-15', MAX(r.ride_date), DAY) AS days_inactive
+FROM passengers p
+LEFT JOIN rides r ON p.passenger_id = r.passenger_id
+GROUP BY p.passenger_id, p.name
+HAVING MAX(r.ride_date) IS NULL
+    OR DATE_DIFF(DATE '2025-04-15', MAX(r.ride_date), DAY) > 30
+ORDER BY p.passenger_id`,
+    ordered: true,
+    hints: ['<code>LEFT JOIN</code> で乗車履歴が無い人も残す', '<code>DATE \'2025-04-15\'</code> で日付リテラル', '<code>HAVING ... IS NULL OR ...</code> で未利用者と長期離脱者を両方拾う'],
+    bqNotes: '休眠ユーザー = リテンション施策のターゲット。<code>DATE_DIFF(基準日, 最終日, DAY)</code> で日数差。基準日を <code>CURRENT_DATE()</code> にすれば実時間ベース。'
+  },
+  {
+    id: 'ap07', category: '実践応用', difficulty: '★★★',
+    title: 'カテゴリ別売上 TOP1 商品',
+    description: '<code>sales</code> と <code>products</code> から、<b>カテゴリごとに売上金額 (quantity × price の合計) が最大の商品</b> を抽出してください。<br>列は <code>category, name, revenue</code>、<code>category</code> 昇順。',
+    tables: ['sales', 'products'],
+    setup: PRODUCTS + SALES,
+    expected: `WITH product_sales AS (
+  SELECT p.category, p.name, SUM(s.quantity * p.price) AS revenue
+  FROM sales s
+  JOIN products p ON s.product_id = p.product_id
+  GROUP BY p.category, p.name, p.product_id
+)
+SELECT category, name, revenue
+FROM product_sales
+QUALIFY ROW_NUMBER() OVER (PARTITION BY category ORDER BY revenue DESC) = 1
+ORDER BY category`,
+    ordered: true,
+    hints: ['商品ごとの売上を CTE で算出', '<code>QUALIFY ROW_NUMBER() OVER (PARTITION BY category ORDER BY revenue DESC) = 1</code>'],
+    bqNotes: 'カテゴリ別の1位を取るパターン。RANK() を使うと同点1位が複数返る挙動になるので、ユースケースで使い分け。'
+  },
+  {
+    id: 'ap08', category: '実践応用', difficulty: '★★★',
+    title: '乗客の利用回数+客単価ランキング',
+    description: '乗客ごとに <b>利用回数と平均運賃</b> (未利用者は 0) を計算し、利用回数 → 平均運賃 の順でランキングしてください。<br>列は <code>passenger_id, name, ride_count, avg_fare, overall_rank</code>、<code>overall_rank, passenger_id</code> 昇順。<code>avg_fare</code> は小数1桁。',
+    tables: ['passengers', 'rides'],
+    setup: PASSENGERS + RIDES,
+    expected: `WITH stats AS (
+  SELECT p.passenger_id, p.name,
+         COUNT(r.ride_id) AS ride_count,
+         ROUND(COALESCE(AVG(r.fare), 0), 1) AS avg_fare
+  FROM passengers p
+  LEFT JOIN rides r ON p.passenger_id = r.passenger_id
+  GROUP BY p.passenger_id, p.name
+)
+SELECT passenger_id, name, ride_count, avg_fare,
+  RANK() OVER (ORDER BY ride_count DESC, avg_fare DESC) AS overall_rank
+FROM stats
+ORDER BY overall_rank, passenger_id`,
+    ordered: true,
+    hints: ['LEFT JOIN + COALESCE で未利用者を 0 扱い', '<code>RANK() OVER (ORDER BY col1 DESC, col2 DESC)</code> で複合キー順位'],
+    bqNotes: '複数指標を組み合わせるランキングは実務で多発。<code>ORDER BY</code> 内のタイブレーカ順序が結果を左右します。'
+  },
+  {
+    id: 'ap09', category: '実践応用', difficulty: '★★★★',
+    title: '累計運賃 1000円突破日',
+    description: '乗客ごとに乗車日順で累計運賃を計算し、<b>累計が初めて 1000 円以上に達した日 (milestone_date) と、その時点の累計金額 (reached_at)</b> を出してください。1000円に到達しなかった人は除外。<br>列は <code>passenger_id, milestone_date, reached_at</code>、<code>passenger_id</code> 昇順。',
+    tables: ['rides'],
+    setup: RIDES,
+    expected: `WITH cumulative AS (
+  SELECT passenger_id, ride_date, ride_id, fare,
+    SUM(fare) OVER (PARTITION BY passenger_id ORDER BY ride_date, ride_id) AS cum_fare
+  FROM rides
+)
+SELECT passenger_id, MIN(ride_date) AS milestone_date, MIN(cum_fare) AS reached_at
+FROM cumulative
+WHERE cum_fare >= 1000
+GROUP BY passenger_id
+ORDER BY passenger_id`,
+    ordered: true,
+    hints: ['CTE で <code>SUM(fare) OVER (PARTITION BY ... ORDER BY ...)</code> = 累計', '累計が 1000 以上のレコードに絞り、各乗客の<b>最小</b>値が到達点', 'MIN(date) と MIN(cum_fare) の組み合わせで「初めて到達した時の状態」'],
+    bqNotes: '「初めて○○を超えた日」「初購入日」「再訪日」など、累計+閾値+MIN の組合せは EC・サブスク分析で頻出。<code>QUALIFY</code> で「初めて 1000 を超えた行のみ」を直接取る書き方もアリ。'
+  },
+  {
+    id: 'ap10', category: '実践応用', difficulty: '★★★',
+    title: '月別 × 性別の利用集計',
+    description: '<b>月 × 性別</b> で平均運賃と乗車回数を集計してください。<br>列は <code>month, gender, avg_fare, rides</code>、<code>month, gender</code> 昇順。<code>avg_fare</code> は小数1桁。',
+    tables: ['rides', 'passengers'],
+    setup: PASSENGERS + RIDES,
+    expected: `SELECT FORMAT_DATE('%Y-%m', r.ride_date) AS month,
+       p.gender,
+       ROUND(AVG(r.fare), 1) AS avg_fare,
+       COUNT(*) AS rides
+FROM rides r
+JOIN passengers p ON r.passenger_id = p.passenger_id
+GROUP BY month, p.gender
+ORDER BY month, p.gender`,
+    ordered: true,
+    hints: ['<code>GROUP BY</code> に2列', '<code>FORMAT_DATE</code> で月化したエイリアスを GROUP BY に直接書ける (BQ/SQLite)'],
+    bqNotes: '多次元集計は <code>GROUP BY ROLLUP(month, gender)</code> や <code>GROUPING SETS</code> で小計・総計を一緒に出すこともできます。レポート向け。'
   }
 ];

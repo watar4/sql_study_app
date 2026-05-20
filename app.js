@@ -101,6 +101,30 @@ function findOuterKeyword(s, keyword) {
   return -1;
 }
 
+function findLastOuterKeyword(s, keyword, startIdx, endIdx) {
+  let depth = 0;
+  let inQ = null;
+  let lastFound = -1;
+  const upperKw = keyword.toUpperCase();
+  for (let i = startIdx; i < endIdx; i++) {
+    const ch = s[i];
+    if (inQ) { if (ch === inQ) inQ = null; continue; }
+    if (ch === "'" || ch === '"') { inQ = ch; continue; }
+    if (ch === '(') { depth++; continue; }
+    if (ch === ')') { depth--; continue; }
+    if (depth !== 0) continue;
+    const slice = s.slice(i, i + keyword.length).toUpperCase();
+    if (slice === upperKw) {
+      const before = i > 0 ? s[i - 1] : ' ';
+      const after = s[i + keyword.length] || ' ';
+      if (/[^A-Za-z0-9_]/.test(before) && /[^A-Za-z0-9_]/.test(after)) {
+        lastFound = i;
+      }
+    }
+  }
+  return lastFound;
+}
+
 function translateUnnest(sql) {
   // Pattern: UNNEST(JSON_EXTRACT_ARRAY(<col>)) AS <alias>
   const re = /UNNEST\s*\(\s*JSON_EXTRACT_ARRAY\s*\(([^()]+)\)\s*\)\s+AS\s+(\w+)/i;
@@ -141,9 +165,13 @@ function translateQualify(sql) {
 
   const fromIdx = findOuterKeyword(beforeQualify, 'FROM');
   if (fromIdx < 0) return sql;
-  const selectPart = beforeQualify.slice(0, fromIdx).trim();
+  // WITH 句がある場合に備え、外側 FROM の直前にある SELECT を探す
+  const selectIdx = findLastOuterKeyword(beforeQualify, 'SELECT', 0, fromIdx);
+  if (selectIdx < 0) return sql;
+
+  const prefixPart = beforeQualify.slice(0, selectIdx).trim();
+  const selectPart = beforeQualify.slice(selectIdx, fromIdx).trim();
   const restPart = beforeQualify.slice(fromIdx).trim();
-  if (!/^SELECT\b/i.test(selectPart)) return sql;
 
   const selectColsRaw = selectPart.replace(/^SELECT\s+/i, '').trim();
   const cols = splitTopLevel(selectColsRaw, ',');
@@ -154,7 +182,8 @@ function translateQualify(sql) {
     return tail ? tail[1] : c.trim();
   });
 
-  return `SELECT ${outputNames.join(', ')} FROM (SELECT ${selectColsRaw}, ${windowExpr} AS _qf_ ${restPart}) WHERE _qf_ ${op} ${val}${orderBy}`;
+  const innerQuery = `${prefixPart ? prefixPart + ' ' : ''}SELECT ${selectColsRaw}, ${windowExpr} AS _qf_ ${restPart}`;
+  return `SELECT ${outputNames.join(', ')} FROM (${innerQuery}) WHERE _qf_ ${op} ${val}${orderBy}`;
 }
 
 // ===== BigQuery → SQLite 翻訳レイヤー =====
@@ -166,6 +195,11 @@ function translateBQtoSQLite(sql) {
   // CURRENT_TIMESTAMP() → CURRENT_TIMESTAMP (SQLite はかっこ不可)
   r = r.replace(/\bCURRENT_TIMESTAMP\s*\(\s*\)/gi, 'CURRENT_TIMESTAMP');
   r = r.replace(/\bCURRENT_DATE\s*\(\s*\)/gi, 'CURRENT_DATE');
+
+  // DATE 'YYYY-MM-DD' / TIMESTAMP 'YYYY-MM-DD ...' リテラル → 単純文字列
+  r = r.replace(/\bDATE\s+'(\d{4}-\d{2}-\d{2})'/gi, "'$1'");
+  r = r.replace(/\bTIMESTAMP\s+'([^']+)'/gi, "'$1'");
+  r = r.replace(/\bDATETIME\s+'([^']+)'/gi, "'$1'");
 
   // SAFE_CAST → CAST、SAFE.FUNC( → FUNC(
   r = r.replace(/\bSAFE_CAST\b/gi, 'CAST');
