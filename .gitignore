@@ -1,0 +1,10 @@
+# 管理者ダッシュボード (service_role キーを含むため GitHub に上げない)
+admin/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Editor
+.vscode/
+.idea/

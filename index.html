@@ -6,10 +6,43 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div id="app">
+<div id="login-overlay" style="display:none">
+  <div class="login-box">
+    <h1>📚 BigQuery SQL 学習</h1>
+    <p class="login-subtitle">続けるには Google でログインしてください</p>
+    <button id="google-login-btn">
+      <span class="g-icon">G</span>
+      <span>Google でログイン</span>
+    </button>
+    <p class="login-note">ログインすると進捗が保存され、別のPCでも続きから学習できます。</p>
+  </div>
+</div>
+
+<div id="init-loading">
+  <div class="spinner"></div>
+  <p>初期化中...</p>
+</div>
+
+<div id="name-setup-overlay" style="display:none">
+  <div class="login-box" style="max-width:440px">
+    <h1>👋 ようこそ!</h1>
+    <p class="login-subtitle">ダッシュボードで表示される<b>表示名</b>を設定してください</p>
+    <input id="display-name-input" type="text" placeholder="山田 太郎" maxlength="40" autocomplete="off">
+    <button id="save-name-btn" style="background:#a6e3a1;color:#1e1e2e;border:none;padding:11px 28px;border-radius:6px;font-weight:700;cursor:pointer;font-size:14px;margin-top:16px;font-family:inherit">
+      保存して始める
+    </button>
+    <p class="login-note">あとから変更できます。会社で使う場合はフルネーム推奨。</p>
+  </div>
+</div>
+
+<div id="app" style="display:none">
   <aside id="sidebar">
     <h1>BQ SQL 学習</h1>
     <button id="home-btn" class="sidebar-nav-btn">🏠 ホーム</button>
+    <div id="user-info" style="display:none">
+      <div class="user-name" id="user-display"></div>
+      <button id="logout-btn" class="link-btn">ログアウト</button>
+    </div>
     <div id="progress">読み込み中...</div>
     <button id="show-cheatsheet" class="sidebar-nav-btn">📘 BQ/SQLite 文法対応表</button>
     <nav id="problem-list"></nav>
@@ -68,6 +101,7 @@
   </main>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/sql.js@1.13.0/dist/sql-wasm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

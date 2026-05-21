@@ -1,11 +1,17 @@
 import { problems, chapters } from './problems.js';
 import { renderCheatsheet } from './cheatsheet.js';
+import { SUPABASE_URL, SUPABASE_KEY } from './config.js';
 
 let SQL = null;
 let db = null;
 let currentProblemId = null;
 
-const SOLVED_KEY = 'sql_study_solved_v2';
+// ===== Supabase (Auth + 進捗保存) =====
+let supabaseClient = null;
+let currentUser = null;
+let solvedCache = new Set();
+
+const LEGACY_SOLVED_KEY = 'sql_study_solved_v2'; // 旧ローカル進捗 (移行用)
 const editorKey = (id) => `sql_study_editor_v2_${id}`;
 
 // ===== SQL.js init =====
@@ -290,18 +296,204 @@ function getTableTypes(tableName) {
   }
 }
 
-// ===== Storage =====
-function getSolved() {
-  try { return JSON.parse(localStorage.getItem(SOLVED_KEY) || '[]'); }
-  catch { return []; }
-}
-function markSolved(id) {
-  const solved = getSolved();
-  if (!solved.includes(id)) {
-    solved.push(id);
-    localStorage.setItem(SOLVED_KEY, JSON.stringify(solved));
+// ===== Supabase Auth & 進捗 =====
+function initSupabase() {
+  if (!window.supabase) {
+    throw new Error('Supabase JS が読み込めていません');
   }
+  supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+    auth: {
+      detectSessionInUrl: true,
+      autoRefreshToken: true,
+      persistSession: true,
+      storage: window.localStorage
+    }
+  });
+}
+
+async function signInWithGoogle() {
+  const { error } = await supabaseClient.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo: window.location.origin + window.location.pathname
+    }
+  });
+  if (error) {
+    alert(`ログイン失敗: ${error.message}`);
+  }
+}
+
+async function signOut() {
+  await supabaseClient.auth.signOut();
+  location.reload();
+}
+
+async function loadSolved() {
+  if (!currentUser) { solvedCache = new Set(); return; }
+  const { data, error } = await supabaseClient
+    .from('user_progress')
+    .select('problem_id')
+    .eq('user_id', currentUser.id);
+  if (error) {
+    console.error('進捗の読み込み失敗:', error);
+    solvedCache = new Set();
+    return;
+  }
+  solvedCache = new Set(data.map(r => r.problem_id));
+}
+
+function getSolved() {
+  return Array.from(solvedCache);
+}
+
+async function markSolved(id) {
+  if (!currentUser) return;
+  if (solvedCache.has(id)) return;
+
+  solvedCache.add(id);
   renderSidebar();
+
+  const { error } = await supabaseClient
+    .from('user_progress')
+    .upsert({
+      user_id: currentUser.id,
+      problem_id: id
+    }, { onConflict: 'user_id,problem_id' });
+
+  if (error) {
+    console.error('進捗保存失敗:', error);
+    solvedCache.delete(id);
+    renderSidebar();
+  }
+}
+
+async function migrateLocalProgress() {
+  if (!currentUser) return;
+  const raw = localStorage.getItem(LEGACY_SOLVED_KEY);
+  if (!raw) return;
+  let local;
+  try { local = JSON.parse(raw); } catch { return; }
+  if (!Array.isArray(local) || local.length === 0) {
+    localStorage.removeItem(LEGACY_SOLVED_KEY);
+    return;
+  }
+  // 既にサーバにある分は除外
+  const newOnes = local.filter(pid => !solvedCache.has(pid));
+  if (newOnes.length === 0) {
+    localStorage.removeItem(LEGACY_SOLVED_KEY);
+    return;
+  }
+  const ok = confirm(`このブラウザに ${newOnes.length} 件のローカル進捗があります。\nあなたのアカウントにインポートしますか?`);
+  if (!ok) {
+    localStorage.removeItem(LEGACY_SOLVED_KEY);
+    return;
+  }
+  const rows = newOnes.map(pid => ({ user_id: currentUser.id, problem_id: pid }));
+  const { error } = await supabaseClient
+    .from('user_progress')
+    .upsert(rows, { onConflict: 'user_id,problem_id' });
+  if (!error) {
+    localStorage.removeItem(LEGACY_SOLVED_KEY);
+    await loadSolved();
+    renderSidebar();
+    renderHome();
+  } else {
+    console.error('移行失敗:', error);
+  }
+}
+
+function showLoginScreen() {
+  document.getElementById('init-loading').style.display = 'none';
+  document.getElementById('login-overlay').style.display = 'flex';
+  document.getElementById('app').style.display = 'none';
+}
+
+function hideLoginScreen() {
+  document.getElementById('init-loading').style.display = 'none';
+  document.getElementById('login-overlay').style.display = 'none';
+  document.getElementById('app').style.display = 'grid';
+}
+
+async function showUserInfo() {
+  const { data } = await supabaseClient
+    .from('user_profiles')
+    .select('display_name')
+    .eq('user_id', currentUser.id)
+    .single();
+  const name = (data && data.display_name)
+    || currentUser.user_metadata?.full_name
+    || currentUser.email
+    || 'User';
+  document.getElementById('user-display').textContent = name;
+  document.getElementById('user-info').style.display = '';
+}
+
+async function needsNameSetup() {
+  const { data, error } = await supabaseClient
+    .from('user_profiles')
+    .select('name_chosen')
+    .eq('user_id', currentUser.id)
+    .single();
+  if (error) {
+    console.warn('profile fetch failed:', error);
+    return false;
+  }
+  return !data || !data.name_chosen;
+}
+
+async function saveDisplayName(name) {
+  const { error } = await supabaseClient
+    .from('user_profiles')
+    .update({ display_name: name, name_chosen: true })
+    .eq('user_id', currentUser.id);
+  if (error) {
+    console.error('display name save failed:', error);
+    return false;
+  }
+  return true;
+}
+
+function showNameSetupOverlay() {
+  document.getElementById('init-loading').style.display = 'none';
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('login-overlay').style.display = 'none';
+  const overlay = document.getElementById('name-setup-overlay');
+  overlay.style.display = 'flex';
+  const input = document.getElementById('display-name-input');
+  input.value = '';
+  setTimeout(() => input.focus(), 0);
+}
+
+function hideNameSetupOverlay() {
+  document.getElementById('name-setup-overlay').style.display = 'none';
+}
+
+async function handleNameSubmit() {
+  const input = document.getElementById('display-name-input');
+  const name = input.value.trim();
+  if (!name) {
+    input.focus();
+    input.style.borderColor = '#f38ba8';
+    return;
+  }
+  if (name.length > 40) {
+    alert('40文字以内で入力してください');
+    return;
+  }
+  const btn = document.getElementById('save-name-btn');
+  btn.disabled = true;
+  btn.textContent = '保存中...';
+  const ok = await saveDisplayName(name);
+  btn.disabled = false;
+  btn.textContent = '保存して始める';
+  if (!ok) {
+    alert('保存に失敗しました。もう一度試してください。');
+    return;
+  }
+  hideNameSetupOverlay();
+  await showUserInfo();
+  document.getElementById('app').style.display = 'grid';
+  showHome();
 }
 
 // ===== Sidebar =====
@@ -655,12 +847,62 @@ function showCheatsheet() {
 }
 
 // ===== Init =====
+async function startApp() {
+  document.getElementById('loading').style.display = 'none';
+  await loadSolved();
+  await migrateLocalProgress();
+
+  // 表示名未設定なら入力画面へ
+  if (await needsNameSetup()) {
+    document.getElementById('init-loading').style.display = 'none';
+    document.getElementById('login-overlay').style.display = 'none';
+    showNameSetupOverlay();
+    return;
+  }
+
+  await showUserInfo();
+  hideLoginScreen();
+  showHome();
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   try {
+    initSupabase();
     await initDB();
-    document.getElementById('loading').style.display = 'none';
-    showHome();
 
+    // Auth listener を先に登録 (OAuth リダイレクト戻りの SIGNED_IN を確実にキャッチ)
+    supabaseClient.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session) {
+        if (!currentUser) {
+          currentUser = session.user;
+          await startApp();
+        }
+      } else if (event === 'SIGNED_OUT') {
+        currentUser = null;
+        solvedCache = new Set();
+        location.reload();
+      }
+    });
+
+    // 既存セッション確認
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    if (session) {
+      currentUser = session.user;
+      await startApp();
+    } else if (window.location.hash.includes('access_token')) {
+      // OAuth リダイレクト処理中 — listener が後で SIGNED_IN を発火する
+      // init-loading のまま待機 (チラつき防止)
+    } else {
+      showLoginScreen();
+    }
+
+    document.getElementById('google-login-btn').onclick = signInWithGoogle;
+    document.getElementById('logout-btn').onclick = signOut;
+    document.getElementById('save-name-btn').onclick = handleNameSubmit;
+    document.getElementById('display-name-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') handleNameSubmit();
+      document.getElementById('display-name-input').style.borderColor = '';
+    });
     document.getElementById('run-btn').onclick = runQuery;
     document.getElementById('answer-btn').onclick = showAnswer;
     document.getElementById('reset-btn').onclick = resetEditor;
@@ -683,9 +925,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     });
   } catch (e) {
-    document.getElementById('loading').innerHTML =
+    document.getElementById('init-loading').innerHTML =
       `<p style="color:#f38ba8">初期化エラー: ${escapeHtml(e.message)}</p>
-       <p style="font-size:12px;margin-top:8px">start.bat 経由でローカルサーバから開く必要があります</p>`;
+       <p style="font-size:12px;margin-top:8px;color:#a6adc8">ローカル起動の場合は start.bat 経由でアクセスしてください</p>`;
     console.error(e);
   }
 });
