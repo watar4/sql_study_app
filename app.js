@@ -440,6 +440,7 @@ async function addToReview(problemId) {
     console.error('振り返り登録失敗:', error);
     reviewCache.delete(problemId);
     updateReviewCountBadge();
+    alert(`振り返り登録に失敗しました:\n${error.message}\n\nSupabase に user_reviews テーブルが作成されているか確認してください。`);
     return false;
   }
   saveProgressCache();
