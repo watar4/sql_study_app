@@ -5,20 +5,63 @@ import { SUPABASE_URL, SUPABASE_KEY } from './config.js';
 let SQL = null;
 let db = null;
 let currentProblemId = null;
+let dbReady = false;
+let dbReadyPromise = null;
 
 // ===== Supabase (Auth + 進捗保存) =====
 let supabaseClient = null;
 let currentUser = null;
+let userProfile = null;
 let solvedCache = new Set();
+let reviewCache = new Set();
 
 const LEGACY_SOLVED_KEY = 'sql_study_solved_v2'; // 旧ローカル進捗 (移行用)
+const PROGRESS_CACHE_KEY = 'sql_study_progress_cache_v1';
 const editorKey = (id) => `sql_study_editor_v2_${id}`;
 
-// ===== SQL.js init =====
+// ===== 起動高速化: ローカルキャッシュ =====
+function hasCachedSession() {
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith('sb-') && k.endsWith('-auth-token')) return true;
+  }
+  return false;
+}
+
+function loadProgressCache() {
+  try {
+    const raw = localStorage.getItem(PROGRESS_CACHE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+
+function saveProgressCache() {
+  if (!currentUser) return;
+  try {
+    localStorage.setItem(PROGRESS_CACHE_KEY, JSON.stringify({
+      uid: currentUser.id,
+      solved: Array.from(solvedCache),
+      reviews: Array.from(reviewCache),
+      profile: userProfile
+    }));
+  } catch {}
+}
+
+// ===== SQL.js init (遅延ロード) =====
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('script load failed: ' + src));
+    document.head.appendChild(s);
+  });
+}
+
 async function initDB() {
-  // window.initSqlJs は index.html の <script> でグローバルに注入される
   if (typeof window.initSqlJs !== 'function') {
-    throw new Error('sql.js が読み込めていません。ネットワーク or CDN を確認してください。');
+    await loadScript('https://cdn.jsdelivr.net/npm/sql.js@1.13.0/dist/sql-wasm.js');
   }
   SQL = await window.initSqlJs({
     locateFile: f => `https://cdn.jsdelivr.net/npm/sql.js@1.13.0/dist/${f}`
@@ -364,7 +407,148 @@ async function markSolved(id) {
     console.error('進捗保存失敗:', error);
     solvedCache.delete(id);
     renderSidebar();
+    return;
   }
+  saveProgressCache();
+}
+
+// ===== 振り返り =====
+async function loadReviews() {
+  if (!currentUser) { reviewCache = new Set(); return; }
+  const { data, error } = await supabaseClient
+    .from('user_reviews')
+    .select('problem_id')
+    .eq('user_id', currentUser.id);
+  if (error) {
+    console.error('振り返り読み込み失敗:', error);
+    reviewCache = new Set();
+    return;
+  }
+  reviewCache = new Set(data.map(r => r.problem_id));
+}
+
+async function addToReview(problemId) {
+  if (!currentUser) return false;
+  if (reviewCache.has(problemId)) return true;
+  reviewCache.add(problemId);
+  updateReviewCountBadge();
+  const { error } = await supabaseClient
+    .from('user_reviews')
+    .upsert({ user_id: currentUser.id, problem_id: problemId },
+            { onConflict: 'user_id,problem_id' });
+  if (error) {
+    console.error('振り返り登録失敗:', error);
+    reviewCache.delete(problemId);
+    updateReviewCountBadge();
+    return false;
+  }
+  saveProgressCache();
+  return true;
+}
+
+async function removeFromReview(problemId) {
+  if (!currentUser) return false;
+  if (!reviewCache.has(problemId)) return true;
+  reviewCache.delete(problemId);
+  updateReviewCountBadge();
+  const { error } = await supabaseClient
+    .from('user_reviews')
+    .delete()
+    .match({ user_id: currentUser.id, problem_id: problemId });
+  if (error) {
+    console.error('振り返り削除失敗:', error);
+    reviewCache.add(problemId);
+    updateReviewCountBadge();
+    return false;
+  }
+  saveProgressCache();
+  return true;
+}
+
+function updateReviewCountBadge() {
+  const badge = document.getElementById('review-count');
+  if (!badge) return;
+  const n = reviewCache.size;
+  badge.textContent = n > 0 ? n : '';
+}
+
+function showReviewPrompt(problemId) {
+  const wrap = document.getElementById('review-prompt');
+  const btn = document.getElementById('add-review-btn');
+  wrap.style.display = '';
+  if (reviewCache.has(problemId)) {
+    btn.textContent = '✓ 振り返り登録済み (クリックで解除)';
+    btn.classList.add('registered');
+    btn.onclick = async () => {
+      await removeFromReview(problemId);
+      showReviewPrompt(problemId);
+    };
+  } else {
+    btn.textContent = '📝 振り返りに登録';
+    btn.classList.remove('registered');
+    btn.onclick = async () => {
+      await addToReview(problemId);
+      showReviewPrompt(problemId);
+    };
+  }
+}
+
+function hideReviewPrompt() {
+  document.getElementById('review-prompt').style.display = 'none';
+}
+
+function showReviewBox() {
+  document.getElementById('home-view').style.display = 'none';
+  document.getElementById('problem-view').style.display = 'none';
+  document.getElementById('cheatsheet').style.display = 'none';
+  document.getElementById('home-btn').classList.remove('active');
+  document.getElementById('review-btn').classList.add('active');
+  document.getElementById('review-view').style.display = 'block';
+  currentProblemId = null;
+  renderReviewBox();
+  renderSidebar();
+  document.getElementById('main').scrollTop = 0;
+}
+
+function renderReviewBox() {
+  const container = document.getElementById('review-list-container');
+  const items = problems.filter(p => reviewCache.has(p.id));
+  if (items.length === 0) {
+    container.innerHTML = `
+      <div class="review-empty">
+        <p>まだ振り返り問題がありません。</p>
+        <p>間違えた問題で「📝 振り返りに登録」を押すと、ここに表示されます。</p>
+      </div>`;
+    return;
+  }
+  container.innerHTML = items.map(p => `
+    <div class="review-card" data-pid="${escapeHtml(p.id)}">
+      <div class="review-card-info">
+        <div class="review-card-tags">
+          <span class="category">${escapeHtml(p.category)}</span>
+          <span class="difficulty">${escapeHtml(p.difficulty || '★')}</span>
+        </div>
+        <div class="review-card-title">${escapeHtml(p.title)}</div>
+        <div class="review-card-meta">問題ID: ${escapeHtml(p.id)}</div>
+      </div>
+      <div class="review-card-actions">
+        <button class="btn-attack" data-action="attack" data-pid="${escapeHtml(p.id)}">挑戦する</button>
+        <button class="btn-remove" data-action="remove" data-pid="${escapeHtml(p.id)}">削除</button>
+      </div>
+    </div>
+  `).join('');
+  container.querySelectorAll('button[data-action]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const action = btn.dataset.action;
+      const pid = btn.dataset.pid;
+      if (action === 'attack') loadProblem(pid);
+      else if (action === 'remove') {
+        await removeFromReview(pid);
+        renderReviewBox();
+      }
+    };
+  });
 }
 
 async function migrateLocalProgress() {
@@ -414,13 +598,23 @@ function hideLoginScreen() {
   document.getElementById('app').style.display = 'grid';
 }
 
-async function showUserInfo() {
-  const { data } = await supabaseClient
+async function loadUserProfile() {
+  if (!currentUser) { userProfile = null; return; }
+  const { data, error } = await supabaseClient
     .from('user_profiles')
-    .select('display_name')
+    .select('display_name, name_chosen')
     .eq('user_id', currentUser.id)
     .single();
-  const name = (data && data.display_name)
+  if (error) {
+    console.warn('profile fetch failed:', error);
+    userProfile = null;
+    return;
+  }
+  userProfile = data;
+}
+
+function showUserInfo() {
+  const name = (userProfile && userProfile.display_name)
     || currentUser.user_metadata?.full_name
     || currentUser.email
     || 'User';
@@ -428,17 +622,8 @@ async function showUserInfo() {
   document.getElementById('user-info').style.display = '';
 }
 
-async function needsNameSetup() {
-  const { data, error } = await supabaseClient
-    .from('user_profiles')
-    .select('name_chosen')
-    .eq('user_id', currentUser.id)
-    .single();
-  if (error) {
-    console.warn('profile fetch failed:', error);
-    return false;
-  }
-  return !data || !data.name_chosen;
+function needsNameSetup() {
+  return !userProfile || !userProfile.name_chosen;
 }
 
 async function saveDisplayName(name) {
@@ -491,7 +676,9 @@ async function handleNameSubmit() {
     return;
   }
   hideNameSetupOverlay();
-  await showUserInfo();
+  userProfile = { display_name: name, name_chosen: true };
+  saveProgressCache();
+  showUserInfo();
   document.getElementById('app').style.display = 'grid';
   showHome();
 }
@@ -534,8 +721,10 @@ function renderSidebar() {
 function showHome() {
   document.getElementById('problem-view').style.display = 'none';
   document.getElementById('cheatsheet').style.display = 'none';
+  document.getElementById('review-view').style.display = 'none';
   document.getElementById('home-view').style.display = 'block';
   document.getElementById('home-btn').classList.add('active');
+  document.getElementById('review-btn').classList.remove('active');
   currentProblemId = null;
   renderHome();
   renderSidebar();
@@ -584,21 +773,32 @@ function renderHome() {
 }
 
 // ===== Problem loader =====
-function loadProblem(id) {
+async function loadProblem(id) {
   const p = problems.find(x => x.id === id);
   if (!p) return;
   currentProblemId = id;
 
   document.getElementById('home-view').style.display = 'none';
   document.getElementById('cheatsheet').style.display = 'none';
+  document.getElementById('review-view').style.display = 'none';
   document.getElementById('home-btn').classList.remove('active');
+  document.getElementById('review-btn').classList.remove('active');
   document.getElementById('problem-view').style.display = 'block';
+  hideReviewPrompt();
 
+  // 待ち中も問題の情報自体は先に表示する
   const header = document.getElementById('problem-header');
   header.querySelector('.category').textContent = p.category;
   header.querySelector('.difficulty').textContent = p.difficulty || '★';
   header.querySelector('.title').textContent = p.title;
   document.getElementById('description').innerHTML = p.description;
+
+  // SQL エンジンの読み込み待ち (初回のみ)
+  if (!dbReady) {
+    document.getElementById('schema').innerHTML = '<h3>📋 SQL エンジン読み込み中...</h3>';
+    await dbReadyPromise;
+    if (currentProblemId !== id) return;
+  }
 
   resetDB();
   execSetup(p.setup);
@@ -678,7 +878,7 @@ function escapeHtml(s) {
 }
 
 // ===== Run / compare =====
-function runQuery() {
+async function runQuery() {
   const p = problems.find(x => x.id === currentProblemId);
   if (!p) return;
   const sql = document.getElementById('editor').value.trim();
@@ -700,6 +900,7 @@ function runQuery() {
       );
       showTranslationNotice(null);
       setResults(null, null);
+      showReviewPrompt(p.id);
       return;
     }
   }
@@ -726,8 +927,13 @@ function runQuery() {
     if (compareResults(userResult, expectedResult, p.ordered === true)) {
       setStatus('✓ 正解です!', 'success');
       markSolved(p.id);
+      hideReviewPrompt();
+      if (reviewCache.has(p.id)) {
+        await removeFromReview(p.id);
+      }
     } else {
       setStatus('× 結果が期待と一致しません。下の「期待される結果」と見比べてください。', 'mismatch');
+      showReviewPrompt(p.id);
     }
   } catch (e) {
     let msg = `エラー: ${e.message}`;
@@ -738,6 +944,7 @@ function runQuery() {
     }
     setStatus(msg, 'error');
     setResults(null, null);
+    showReviewPrompt(p.id);
   }
 }
 
@@ -767,6 +974,13 @@ function setStatus(msg, kind) {
   el.textContent = msg;
   el.classList.add('visible');
   if (kind) el.classList.add(`status-${kind}`);
+  // 実行結果が確定するステータス (正解 / 不一致 / エラー) のときは
+  // ステータス位置まで自動スクロールしてユーザーの目線を結果に誘導
+  if (kind === 'success' || kind === 'error' || kind === 'mismatch') {
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
 }
 
 function setResults(userResult, expectedResult) {
@@ -837,7 +1051,9 @@ function toggleHints() {
 function showCheatsheet() {
   document.getElementById('problem-view').style.display = 'none';
   document.getElementById('home-view').style.display = 'none';
+  document.getElementById('review-view').style.display = 'none';
   document.getElementById('home-btn').classList.remove('active');
+  document.getElementById('review-btn').classList.remove('active');
   const c = document.getElementById('cheatsheet');
   c.style.display = 'block';
   c.innerHTML = renderCheatsheet();
@@ -847,51 +1063,92 @@ function showCheatsheet() {
 }
 
 // ===== Init =====
+function showAppShellFromCache() {
+  // ローカルキャッシュから進捗を即復元
+  const cache = loadProgressCache();
+  if (cache) {
+    solvedCache = new Set(cache.solved || []);
+    reviewCache = new Set(cache.reviews || []);
+    userProfile = cache.profile || null;
+  }
+  // init-loading を即消す
+  document.getElementById('init-loading').style.display = 'none';
+  document.getElementById('login-overlay').style.display = 'none';
+  document.getElementById('app').style.display = 'grid';
+
+  if (userProfile && userProfile.display_name) {
+    document.getElementById('user-display').textContent = userProfile.display_name;
+    document.getElementById('user-info').style.display = '';
+  }
+
+  updateReviewCountBadge();
+  renderSidebar();
+
+  // ホーム画面を表示 (キャッシュデータで)
+  document.getElementById('home-view').style.display = 'block';
+  document.getElementById('home-btn').classList.add('active');
+  renderHome();
+}
+
 async function startApp() {
-  document.getElementById('loading').style.display = 'none';
-  await loadSolved();
-  await migrateLocalProgress();
+  // 既に shell が描画済みでない場合は描画
+  if (document.getElementById('app').style.display === 'none') {
+    showAppShellFromCache();
+  }
+
+  // バックグラウンドで最新データを取得
+  await Promise.all([
+    loadSolved(),
+    loadReviews(),
+    loadUserProfile()
+  ]);
+  saveProgressCache();
+  updateReviewCountBadge();
 
   // 表示名未設定なら入力画面へ
-  if (await needsNameSetup()) {
-    document.getElementById('init-loading').style.display = 'none';
-    document.getElementById('login-overlay').style.display = 'none';
+  if (needsNameSetup()) {
     showNameSetupOverlay();
     return;
   }
 
-  await showUserInfo();
-  hideLoginScreen();
-  showHome();
+  // 更新後の UI 再描画
+  showUserInfo();
+  renderSidebar();
+  renderHome();
+
+  // ローカル進捗の移行は非同期で実行(UI ブロックしない)
+  migrateLocalProgress();
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
   try {
     initSupabase();
-    await initDB();
 
-    // Auth listener を先に登録 (OAuth リダイレクト戻りの SIGNED_IN を確実にキャッチ)
+    // Auth listener を最優先で登録 (INITIAL_SESSION 取りこぼし防止)
     supabaseClient.auth.onAuthStateChange(async (event, session) => {
-      if (event === 'SIGNED_IN' && session) {
+      if ((event === 'INITIAL_SESSION' || event === 'SIGNED_IN') && session) {
         if (!currentUser) {
           currentUser = session.user;
-          await startApp();
+          startApp();
         }
       } else if (event === 'SIGNED_OUT') {
         currentUser = null;
         solvedCache = new Set();
+        reviewCache = new Set();
+        userProfile = null;
+        localStorage.removeItem(PROGRESS_CACHE_KEY);
         location.reload();
       }
     });
 
-    // 既存セッション確認
-    const { data: { session } } = await supabaseClient.auth.getSession();
-    if (session) {
-      currentUser = session.user;
-      await startApp();
+    // SQL.js (WASM) は重いのでバックグラウンドで非同期ロード開始。await しない。
+    dbReadyPromise = initDB().then(() => { dbReady = true; });
+
+    // ★ 即座に判定: localStorage にセッションがあれば UI を先に出す
+    if (hasCachedSession()) {
+      showAppShellFromCache();
     } else if (window.location.hash.includes('access_token')) {
-      // OAuth リダイレクト処理中 — listener が後で SIGNED_IN を発火する
-      // init-loading のまま待機 (チラつき防止)
+      // OAuth リダイレクト中、init-loading のまま待機
     } else {
       showLoginScreen();
     }
@@ -908,6 +1165,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('reset-btn').onclick = resetEditor;
     document.getElementById('show-cheatsheet').onclick = showCheatsheet;
     document.getElementById('home-btn').onclick = showHome;
+    document.getElementById('review-btn').onclick = showReviewBox;
     document.getElementById('hint-btn').onclick = toggleHints;
 
     const editor = document.getElementById('editor');

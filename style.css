@@ -228,6 +228,121 @@ body {
 .sidebar-nav-btn:hover { background: #45475a; }
 .sidebar-nav-btn.active { background: #89b4fa; color: #1e1e2e; font-weight: 700; }
 
+.count-badge {
+  background: #f38ba8;
+  color: #1e1e2e;
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-weight: 700;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.count-badge:empty { display: none; }
+.sidebar-nav-btn.active .count-badge { background: #1e1e2e; color: #f38ba8; }
+
+#review-prompt {
+  margin-top: 10px;
+}
+#add-review-btn {
+  background: #fab387;
+  color: #1e1e2e;
+  border: none;
+  padding: 9px 18px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 13px;
+  font-family: inherit;
+}
+#add-review-btn:hover { opacity: 0.85; }
+#add-review-btn.registered {
+  background: #313244;
+  color: #a6e3a1;
+  font-weight: 600;
+}
+
+.review-card {
+  background: #181825;
+  border: 1px solid #313244;
+  border-radius: 10px;
+  padding: 14px 18px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.review-card-info { flex: 1; min-width: 0; }
+.review-card-tags {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.review-card-tags .category {
+  background: #89b4fa;
+  color: #1e1e2e;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.review-card-tags .difficulty {
+  background: #f9e2af;
+  color: #1e1e2e;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.review-card-title {
+  color: #f5c2e7;
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.review-card-meta {
+  font-size: 11px;
+  color: #6c7086;
+}
+.review-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.review-card-actions button {
+  font-size: 12px;
+  padding: 7px 14px;
+}
+.review-card-actions .btn-attack {
+  background: #89b4fa;
+  color: #1e1e2e;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.review-card-actions .btn-remove {
+  background: transparent;
+  color: #f38ba8;
+  border: 1px solid #f38ba8;
+  border-radius: 6px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+}
+.review-card-actions .btn-remove:hover { background: #f38ba8; color: #1e1e2e; }
+
+.review-empty {
+  background: #181825;
+  border: 1px dashed #313244;
+  border-radius: 10px;
+  padding: 40px 20px;
+  text-align: center;
+  color: #a6adc8;
+  line-height: 1.7;
+}
+
 /* ===== Home view ===== */
 .home-header h1 { font-size: 28px; color: #f5c2e7; margin-bottom: 6px; }
 .home-header p { color: #a6adc8; font-size: 14px; }

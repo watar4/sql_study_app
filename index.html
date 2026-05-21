@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <title>BigQuery SQL 学習アプリ</title>
 <link rel="stylesheet" href="style.css">
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="preconnect" href="https://tswuvheiwnxrykpkkiii.supabase.co">
 </head>
 <body>
 <div id="login-overlay" style="display:none">
@@ -39,6 +41,7 @@
   <aside id="sidebar">
     <h1>BQ SQL 学習</h1>
     <button id="home-btn" class="sidebar-nav-btn">🏠 ホーム</button>
+    <button id="review-btn" class="sidebar-nav-btn">📝 振り返り <span class="count-badge" id="review-count"></span></button>
     <div id="user-info" style="display:none">
       <div class="user-name" id="user-display"></div>
       <button id="logout-btn" class="link-btn">ログアウト</button>
@@ -48,10 +51,6 @@
     <nav id="problem-list"></nav>
   </aside>
   <main id="main">
-    <div id="loading">
-      <div class="spinner"></div>
-      <p>SQL エンジンを読み込み中...</p>
-    </div>
     <div id="home-view" style="display:none">
       <div class="home-header">
         <h1>BigQuery SQL 学習</h1>
@@ -91,17 +90,26 @@
         <button id="reset-btn" class="secondary">リセット</button>
       </div>
       <div id="status"></div>
+      <div id="review-prompt" style="display:none">
+        <button id="add-review-btn">📝 振り返りに登録</button>
+      </div>
       <div id="translation-notice" style="display:none"></div>
       <div id="result"></div>
       <div id="expected"></div>
       <div id="hints"></div>
       <div id="bq-notes"></div>
     </div>
+    <div id="review-view" style="display:none">
+      <div class="home-header">
+        <h1>📝 振り返り</h1>
+        <p>間違えて登録した問題に再挑戦できます</p>
+      </div>
+      <div id="review-list-container"></div>
+    </div>
     <div id="cheatsheet" style="display:none"></div>
   </main>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/sql.js@1.13.0/dist/sql-wasm.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>
