@@ -149,6 +149,67 @@ body {
   height: 100vh;
 }
 
+/* 前/次の問題ナビ (画面右下に追従) */
+#problem-nav {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  display: flex;
+  gap: 8px;
+  z-index: 90;
+}
+#problem-nav button {
+  background: #313244;
+  color: #cdd6f4;
+  border: 1px solid #45475a;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  transition: background 0.15s, transform 0.1s;
+}
+#problem-nav button:hover:not(:disabled) {
+  background: #89b4fa;
+  color: #1e1e2e;
+  transform: translateY(-1px);
+}
+#problem-nav button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ハンバーガーボタン (デフォルトは非表示。モバイルのみ表示) */
+#hamburger-btn {
+  display: none;
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 200;
+  background: #313244;
+  color: #cdd6f4;
+  border: 1px solid #45475a;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+}
+#hamburger-btn:hover { background: #45475a; }
+
+/* サイドバー背景オーバーレイ (モバイルでサイドバー展開時) */
+#sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  z-index: 100;
+}
+#sidebar-backdrop.visible { display: block; }
+
 /* ===== Sidebar ===== */
 #sidebar {
   background: #181825;
@@ -489,6 +550,9 @@ body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* 問題ビューは右下追従ナビと被らないように下部余白を確保 */
+#problem-view { padding-bottom: 80px; }
+
 #problem-header { margin-bottom: 16px; }
 #problem-header .tags { display: flex; gap: 6px; margin-bottom: 8px; }
 #problem-header .category {
@@ -587,7 +651,6 @@ button.secondary { background: #313244; color: #cdd6f4; font-weight: 500; }
   padding: 12px 16px;
   border-radius: 8px;
   margin-top: 12px;
-  overflow-x: auto;
 }
 #result h3, #expected h3 { font-size: 12px; margin-bottom: 8px; color: #f9e2af; letter-spacing: 0.05em; }
 #result.empty, #expected.empty { display: none; }
@@ -605,6 +668,56 @@ table.result-table th, table.result-table td {
 }
 table.result-table th { background: #313244; color: #f9e2af; font-weight: 600; vertical-align: top; }
 table.result-table td.null { color: #6c7086; font-style: italic; }
+
+/* 横スクロール可能テーブルのラッパー */
+.table-scroll {
+  position: relative;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: #89b4fa #313244;
+}
+.table-scroll::-webkit-scrollbar { height: 8px; }
+.table-scroll::-webkit-scrollbar-track { background: #11111b; border-radius: 4px; }
+.table-scroll::-webkit-scrollbar-thumb { background: #585b70; border-radius: 4px; }
+.table-scroll::-webkit-scrollbar-thumb:hover { background: #89b4fa; }
+
+/* スクロール可能な場合のヒント (バッジ + 右端フェード) */
+.table-scroll.is-scrollable {
+  box-shadow: inset -32px 0 24px -24px rgba(137, 180, 250, 0.45);
+  transition: box-shadow 0.3s ease;
+}
+.table-scroll.is-scrollable::after {
+  content: '↔ 横スクロール';
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: #89b4fa;
+  color: #1e1e2e;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: 10px;
+  pointer-events: none;
+  letter-spacing: 0.02em;
+  animation: scrollHintBlink 1.8s ease-in-out infinite;
+  z-index: 2;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  transition: opacity 0.3s ease;
+}
+/* 一度スクロールしたらバッジとフェードを消す */
+.table-scroll.is-scrollable.scrolled {
+  box-shadow: none;
+}
+.table-scroll.is-scrollable.scrolled::after {
+  animation: none;     /* これがないと keyframes の opacity が効き続ける */
+  opacity: 0;
+  pointer-events: none;
+}
+@keyframes scrollHintBlink {
+  0%, 100% { opacity: 0.95; transform: translateX(0); }
+  50% { opacity: 0.6; transform: translateX(-3px); }
+}
 .col-type {
   display: block;
   font-weight: 400;
@@ -689,4 +802,152 @@ table.result-table td.null { color: #6c7086; font-style: italic; }
   font-family: 'Cascadia Code', monospace;
   font-size: 12px;
   color: #a6e3a1;
+}
+
+/* ========================================================== */
+/* レスポンシブ (タブレット・スマホ)                            */
+/* ========================================================== */
+@media (max-width: 900px) {
+  body {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  #app {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 100vh;
+    max-width: 100vw;
+  }
+
+  #main {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  /* テーブル横スクロールが親を押し広げないように */
+  #problem-view, #schema, .table-info {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  #hamburger-btn { display: block; }
+
+  #sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 84%;
+    max-width: 320px;
+    height: 100vh;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    z-index: 150;
+    box-shadow: 6px 0 24px rgba(0, 0, 0, 0.5);
+    padding-top: 56px; /* ハンバーガー分の余白 */
+  }
+  #sidebar.open { transform: translateX(0); }
+
+  #main {
+    padding: 56px 16px 24px;
+    overflow-y: visible;
+  }
+
+  /* Home view */
+  .home-header h1 { font-size: 22px; }
+  .home-header p { font-size: 13px; }
+  .overall-progress {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 16px;
+    padding: 18px 20px;
+  }
+  .progress-stat { min-width: 0; text-align: center; }
+  .big-number { font-size: 28px; }
+  .chapter-grid { grid-template-columns: 1fr; }
+
+  /* Problem view */
+  #problem-header .title { font-size: 19px; }
+  #description {
+    padding: 12px 14px;
+    font-size: 14px;
+  }
+  #schema { padding: 10px 12px; }
+  #editor {
+    min-height: 160px;
+    font-size: 13px;
+    padding: 10px;
+  }
+  #buttons {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  #buttons button {
+    flex: 1 1 auto;
+    min-width: calc(50% - 6px);
+    font-size: 12px;
+    padding: 9px 12px;
+  }
+  #status { font-size: 13px; padding: 10px 12px; }
+  #result, #expected, #translation-notice, #hints, #bq-notes {
+    padding: 10px 12px;
+  }
+
+  /* テーブルは横スクロールできるように */
+  table.result-table { font-size: 11px; }
+  table.result-table th, table.result-table td {
+    padding: 3px 8px;
+  }
+
+  /* レビュー / cheatsheet テーブルも */
+  #cheatsheet { padding: 0 4px; }
+  #cheatsheet table { font-size: 12px; display: block; overflow-x: auto; }
+  #cheatsheet th, #cheatsheet td { padding: 6px 8px; }
+
+  .review-card {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .review-card-actions { justify-content: flex-end; }
+
+  /* 前/次ナビ - モバイル */
+  #problem-nav {
+    bottom: 12px;
+    right: 12px;
+    left: 12px;
+    justify-content: space-between;
+  }
+  #problem-nav button {
+    flex: 1;
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+  /* ナビ分の下部余白 (横幅いっぱいなのでより多く) */
+  #problem-view { padding-bottom: 100px; }
+
+  /* Login overlay */
+  .login-box {
+    padding: 28px 24px;
+  }
+  .login-box h1 { font-size: 18px; }
+  .login-subtitle { font-size: 13px; }
+  #google-login-btn {
+    padding: 10px 20px;
+    font-size: 13px;
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+/* より狭い画面 (~480px) はさらに調整 */
+@media (max-width: 480px) {
+  #buttons button {
+    min-width: 100%;
+    flex: 1 1 100%;
+  }
+  #problem-header .title { font-size: 17px; }
+  #description { font-size: 13px; }
+  .home-header h1 { font-size: 19px; }
+  .big-number { font-size: 24px; }
 }

@@ -2,6 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BigQuery SQL 学習アプリ</title>
 <link rel="stylesheet" href="style.css">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
@@ -38,6 +39,8 @@
 </div>
 
 <div id="app" style="display:none">
+  <button id="hamburger-btn" aria-label="メニュー">☰</button>
+  <div id="sidebar-backdrop"></div>
   <aside id="sidebar">
     <h1>BQ SQL 学習</h1>
     <button id="home-btn" class="sidebar-nav-btn">🏠 ホーム</button>
@@ -108,6 +111,10 @@
     </div>
     <div id="cheatsheet" style="display:none"></div>
   </main>
+  <div id="problem-nav" style="display:none">
+    <button id="prev-problem-btn" title="前の問題">← 前の問題</button>
+    <button id="next-problem-btn" title="次の問題">次の問題 →</button>
+  </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
 <script type="module" src="app.js"></script>

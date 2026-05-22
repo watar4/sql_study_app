@@ -506,6 +506,7 @@ function showReviewBox() {
   document.getElementById('review-btn').classList.add('active');
   document.getElementById('review-view').style.display = 'block';
   currentProblemId = null;
+  updateProblemNav();
   renderReviewBox();
   renderSidebar();
   document.getElementById('main').scrollTop = 0;
@@ -727,6 +728,7 @@ function showHome() {
   document.getElementById('home-btn').classList.add('active');
   document.getElementById('review-btn').classList.remove('active');
   currentProblemId = null;
+  updateProblemNav();
   renderHome();
   renderSidebar();
   document.getElementById('main').scrollTop = 0;
@@ -786,6 +788,7 @@ async function loadProblem(id) {
   document.getElementById('review-btn').classList.remove('active');
   document.getElementById('problem-view').style.display = 'block';
   hideReviewPrompt();
+  updateProblemNav();
 
   // 待ち中も問題の情報自体は先に表示する
   const header = document.getElementById('problem-header');
@@ -814,6 +817,7 @@ async function loadProblem(id) {
     div.innerHTML = `<div class="table-name">${t}</div>${renderTable(res, types)}`;
     schemaDiv.appendChild(div);
   }
+  annotateScrollableTables(schemaDiv);
 
   const saved = localStorage.getItem(editorKey(id));
   document.getElementById('editor').value = saved || '';
@@ -856,9 +860,9 @@ function renderTable(result, types) {
     return `<th>${escapeHtml(c)}${t}</th>`;
   }).join('');
   if (!result.values.length) {
-    return `<table class="result-table"><thead><tr>${headerCells}</tr></thead><tbody><tr><td colspan="${result.columns.length}" class="null">(結果0行)</td></tr></tbody></table>`;
+    return `<div class="table-scroll"><table class="result-table"><thead><tr>${headerCells}</tr></thead><tbody><tr><td colspan="${result.columns.length}" class="null">(結果0行)</td></tr></tbody></table></div>`;
   }
-  let html = `<table class="result-table"><thead><tr>${headerCells}</tr></thead><tbody>`;
+  let html = `<div class="table-scroll"><table class="result-table"><thead><tr>${headerCells}</tr></thead><tbody>`;
   for (const row of result.values) {
     html += '<tr>';
     for (const v of row) {
@@ -870,8 +874,34 @@ function renderTable(result, types) {
     }
     html += '</tr>';
   }
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
   return html;
+}
+
+// スクロール可能なテーブルにヒントを付ける (DOM 挿入後に呼ぶ)
+function annotateScrollableTables(root) {
+  const target = root || document;
+  requestAnimationFrame(() => {
+    target.querySelectorAll('.table-scroll').forEach(div => {
+      if (div.scrollWidth > div.clientWidth + 4) {
+        div.classList.add('is-scrollable');
+        // 一度だけ scroll リスナを取り付け、ユーザーが横スクロールしたらバッジを消す
+        if (!div.dataset.scrollHooked) {
+          div.dataset.scrollHooked = '1';
+          const onScroll = () => {
+            if (div.scrollLeft > 4) {
+              div.classList.add('scrolled');
+              div.removeEventListener('scroll', onScroll);
+            }
+          };
+          div.addEventListener('scroll', onScroll, { passive: true });
+        }
+      } else {
+        div.classList.remove('is-scrollable');
+        div.classList.remove('scrolled');
+      }
+    });
+  });
 }
 
 function escapeHtml(s) {
@@ -997,6 +1027,8 @@ function setResults(userResult, expectedResult) {
     eDiv.classList.remove('empty');
     eDiv.innerHTML = `<h3>期待される結果 (${expectedResult.values.length} 行)</h3>${renderTable(expectedResult)}`;
   }
+  annotateScrollableTables(rDiv);
+  annotateScrollableTables(eDiv);
 }
 
 function compareResults(a, b, ordered) {
@@ -1059,8 +1091,35 @@ function showCheatsheet() {
   c.style.display = 'block';
   c.innerHTML = renderCheatsheet();
   currentProblemId = null;
+  updateProblemNav();
   renderSidebar();
   document.getElementById('main').scrollTop = 0;
+}
+
+function updateProblemNav() {
+  const nav = document.getElementById('problem-nav');
+  if (!nav) return;
+  if (!currentProblemId) {
+    nav.style.display = 'none';
+    return;
+  }
+  const idx = problems.findIndex(p => p.id === currentProblemId);
+  if (idx < 0) {
+    nav.style.display = 'none';
+    return;
+  }
+  nav.style.display = 'flex';
+  document.getElementById('prev-problem-btn').disabled = idx <= 0;
+  document.getElementById('next-problem-btn').disabled = idx >= problems.length - 1;
+}
+
+function goPrevProblem() {
+  const idx = problems.findIndex(p => p.id === currentProblemId);
+  if (idx > 0) loadProblem(problems[idx - 1].id);
+}
+function goNextProblem() {
+  const idx = problems.findIndex(p => p.id === currentProblemId);
+  if (idx >= 0 && idx < problems.length - 1) loadProblem(problems[idx + 1].id);
 }
 
 // ===== Init =====
@@ -1168,6 +1227,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('home-btn').onclick = showHome;
     document.getElementById('review-btn').onclick = showReviewBox;
     document.getElementById('hint-btn').onclick = toggleHints;
+    document.getElementById('prev-problem-btn').onclick = goPrevProblem;
+    document.getElementById('next-problem-btn').onclick = goNextProblem;
+
+    // 画面リサイズ時にスクロール可能テーブルを再判定
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => annotateScrollableTables(), 100);
+    });
+
+    // モバイル: ハンバーガーで sidebar 開閉
+    const sidebar = document.getElementById('sidebar');
+    const backdrop = document.getElementById('sidebar-backdrop');
+    const hamburger = document.getElementById('hamburger-btn');
+    function openSidebar() { sidebar.classList.add('open'); backdrop.classList.add('visible'); }
+    function closeSidebar() { sidebar.classList.remove('open'); backdrop.classList.remove('visible'); }
+    hamburger.onclick = () => {
+      if (sidebar.classList.contains('open')) closeSidebar();
+      else openSidebar();
+    };
+    backdrop.onclick = closeSidebar;
+    // モバイルでサイドバー内のナビをクリックしたら自動で閉じる
+    sidebar.addEventListener('click', (e) => {
+      const target = e.target.closest('.sidebar-nav-btn, .problem-item');
+      if (target && window.matchMedia('(max-width: 900px)').matches) {
+        closeSidebar();
+      }
+    });
 
     const editor = document.getElementById('editor');
     editor.addEventListener('keydown', (e) => {
