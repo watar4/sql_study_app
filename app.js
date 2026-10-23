@@ -49,10 +49,14 @@ function saveProgressCache() {
 }
 
 // ===== SQL.js init (遅延ロード) =====
-function loadScript(src) {
+function loadScript(src, integrity) {
   return new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = src;
+    if (integrity) {
+      s.integrity = integrity;
+      s.crossOrigin = 'anonymous';
+    }
     s.onload = resolve;
     s.onerror = () => reject(new Error('script load failed: ' + src));
     document.head.appendChild(s);
@@ -61,7 +65,7 @@ function loadScript(src) {
 
 async function initDB() {
   if (typeof window.initSqlJs !== 'function') {
-    await loadScript('https://cdn.jsdelivr.net/npm/sql.js@1.13.0/dist/sql-wasm.js');
+    await loadScript('https://cdn.jsdelivr.net/npm/sql.js@1.13.0/dist/sql-wasm.js', 'sha384-DJiKBv+LC78e5InEB+MvFIAH079ynMK/ERTtFUCpDzXhH1Bht7aVfpg3yOVsuYl9');
   }
   SQL = await window.initSqlJs({
     locateFile: f => `https://cdn.jsdelivr.net/npm/sql.js@1.13.0/dist/${f}`

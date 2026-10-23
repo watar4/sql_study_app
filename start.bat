@@ -24,15 +24,15 @@ goto :eof
 
 :run_py
 start "" http://localhost:8765
-py -m http.server 8765
+py -m http.server 8765 --bind 127.0.0.1
 goto :eof
 
 :run_python
 start "" http://localhost:8765
-python -m http.server 8765
+python -m http.server 8765 --bind 127.0.0.1
 goto :eof
 
 :run_npx
 start "" http://localhost:8765
-npx --yes http-server -p 8765 -c-1 .
+npx --yes http-server@14.1.1 -a 127.0.0.1 -p 8765 -c-1 .
 goto :eof
